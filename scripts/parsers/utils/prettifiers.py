@@ -1,10 +1,7 @@
 # coding=utf-8
 
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-#            Esse script faz parte de um projeto bem maior, solto no momento pq quero feedback, de tudo.              #
-#         Também preciso que ele seja testado contra diversos cursos e que os problemas sejam apresentados.           #
-#                                          Meu telegram: @katomaro                                                    #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+from os import system
+from sys import platform
 
 class Colors:
     """ANSI Escape codes for the console output with colors and rich text.
@@ -85,3 +82,10 @@ class Colors:
     bgWhite = '\u001b[47m'
     """White background ANSI Escape code.
     """
+
+
+class ClearScreen:
+    if platform.startswith('darwin') or platform.startswith('linux'):
+        system("clear")
+    elif platform.startswith('win32'):
+        system("cls")

@@ -653,6 +653,11 @@ def downloadVideoNativo(authMart, tempFolder, nomeModulo, nomeAula, playerInfo, 
             elif sys.platform.startswith('win32'):
                 # Windows specific procedures
                 subprocess.run(ffmpegcmd)
+                
+            elif sys.platform.startswith('linux'):
+                # Linux specific procedures
+                subprocess.run(
+                    ffmpegcmd, shell=True)
 
                 # TODO Implementar verificação de falha pelo FFMPEG
                 # p = subprocess.run(ffmpegcmd)

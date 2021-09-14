@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 from utils.prettifiers import Colors as C
 from utils.prettifiers import ClearScreen
 from utils.fix_paths import NormalizeString
-from downloaders.video_downloader import NativeVideoProtected
+from downloaders.video_downloader import NativeVideoGetProtected
 from downloaders.video_downloader import EmbeddedVideo
 
 class HotmartClub:
@@ -24,6 +24,7 @@ class HotmartClub:
         ' Chrome/91.0.4472.106 Safari/537.36'
         )
         self.download_course_quantity = 0
+        self.count_downloadable_course = 0
         self.course_info = None
         self.course_json = None
         self.course_stats = {'total_modules': 0,
@@ -33,7 +34,9 @@ class HotmartClub:
                             'locked_lessons': 0,
                             'count_lesson': 0,
                             'current_module': None,
-                            'current_lesson': None}
+                            'current_lesson': None,
+                            'current_video': None,
+                            'video_seconds': 0}
         self.auth_hotmart = self.create_session()
         self.downloadable_courses_list = self.retrieve_downloadable_list()
         self.start_course_download()
@@ -143,7 +146,7 @@ class HotmartClub:
                 continue
         
         if download_choice > -1:
-            self.downloadable_course_quantity = 1
+            self.download_course_quantity = 1
             self.course_info = self.downloadable_courses_list[download_choice]
             self.parse_course_info()
         else:
@@ -166,36 +169,46 @@ class HotmartClub:
         lesson_getter = self.auth_hotmart
         return lesson_getter.get(f'{self.HOTMART_API}/page/{page_hash}').json()
 
-    def retrieve_native_player_info(self, lesson_videos: list=[]):
+    def retrieve_native_player_lesson(self, lesson_videos: list=[]):
         for index, media in enumerate(lesson_videos, start=1):
             if media['mediaType'] != "VIDEO":
                 continue
             video_getter = self.auth_hotmart
             player = video_getter.get(media['mediaSrcUrl']).text
-            print(player)
-            playerInfo = json.loads(BeautifulSoup(player, features="html.parser") \
+            info = json.loads(BeautifulSoup(player, features="html.parser") \
             .find(text=re.compile("window.playerConfig"))[:-1].split(" ", 2)[2])
-            print(playerInfo)
+            self.course_stats['video_seconds'] += info['player']['mediaDuration']
+            for asset in info['player']['assets']:
+                download_info = {'master_playlist': f"{asset['url']}?{info['player']['cloudFrontSignature']}",
+                'save_path': f"{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/{index}. {NormalizeString(media['mediaName']).normalize()}.mp4",
+                'session': self.auth_hotmart}
+                NativeVideoGetProtected(download_info).cleanup()
     
     def retrieve_embedded_links(self):
         pass
     
     
     def parse_course_info(self):
+        self.count_downloadable_course += 1
+        ClearScreen()
         self.auth_hotmart = self.create_session()
         self.course_json = self.auth_hotmart.get(
                                     f'{self.HOTMART_API}/navigation').json()
         self.count_course_resources()
         for module in self.course_json['modules']:
+            self.course_stats['count_module'] += 1
             self.course_stats['current_module'] = \
             f"{module['moduleOrder']}. {NormalizeString(module['name']).normalize()}"
             for lesson in module['pages']:
+                if self.course_stats['count_lesson'] % 5 == 0:
+                    ClearScreen()
+                self.course_stats['count_lesson'] += 1
                 self.course_stats['current_lesson'] = \
                     f"{lesson['pageOrder']}. {NormalizeString(lesson['name']).normalize()}"
+                print(f"Curso {self.count_downloadable_course}/{self.download_course_quantity}: {self.course_info['name']};;; Verificando o {C.Cyan}Módulo {self.course_stats['count_module']}{C.Reset}/{C.Blue}{self.course_stats['total_modules']}{C.Reset}; {C.Cyan}Aula {self.course_stats['count_lesson']}{C.Reset}/{C.Blue}{self.course_stats['total_lessons']}{C.Reset}")
                 lesson_info = self.retrieve_lesson_info(lesson['hash'])
                 try:
-                    print("try")
-                    self.retrieve_native_player_info(lesson_info['mediasSrc'])
+                    self.retrieve_native_player_lesson(lesson_info['mediasSrc'])
                 except KeyError:
                     pass
                     # self.retrieve_embedded_links()

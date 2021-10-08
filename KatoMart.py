@@ -6,8 +6,6 @@ import os
 
 from bs4 import BeautifulSoup
 
-
-from genericpath import exists
 import youtube_dl
 import m3u8
 import random
@@ -17,6 +15,7 @@ import subprocess
 import glob
 import time
 
+download_success = False
 
 class NativeVideoGetProtected:
     def __init__(self, download_info) -> None:
@@ -25,7 +24,15 @@ class NativeVideoGetProtected:
         self.get_policy = self.master_playlist_url.split('?', 1)[1]
         self.save_path = download_info['save_path']
         self.high_qual = self.filter_video_quality()
-        self.temp_folder = self.make_temp_folder()
+        self.temp_folder = None
+        self.finished = False
+    
+    def video_exists(self):
+        if os.path.isfile(self.save_path):
+            self.finished = True
+            self.cleanup()
+        else:
+            self.save_video()
     
     def check_save_path(self):
         if len(self.save_path) > 254:
@@ -45,7 +52,7 @@ class NativeVideoGetProtected:
             random.choices(string.ascii_uppercase + string.digits, k=7))
         if not os.path.exists(temp_folder):
             os.makedirs(temp_folder)
-        return temp_folder
+        self.temp_folder = temp_folder
         
     def filter_video_quality(self):
         master_content = self.video_session.get(self.master_playlist_url)
@@ -61,6 +68,10 @@ class NativeVideoGetProtected:
     def download_playlist_contents(self):
         hq_content = self.video_session.get(
         f"{self.master_playlist_url[:self.master_playlist_url.rfind('/')]}/{self.high_qual}?{self.get_policy}")
+        
+        if hq_content.status_code != 200:
+            self.cleanup()
+        
         with open(f'{self.temp_folder}/dump.m3u8', 'w') as dump:
             dump.write(hq_content.text)
         hq_playlist = m3u8.loads(hq_content.text)
@@ -70,17 +81,26 @@ class NativeVideoGetProtected:
             print(f"\r\tPlayer NATIVO! Baixando o segmento: {segment.uri.split('.')[0].split('-')[1]}/{totalSegmentos}!",
                 end="", flush=True)
             uri = segment.uri
-            frag = self.video_session.get(
+            frag = self.video_session.get(            
             f"{self.master_playlist_url[:self.master_playlist_url.rfind('/')]}/{self.high_qual.split('/')[0]}/{uri}?{self.get_policy}")
+            
+            if frag.status_code != 200:
+                self.cleanup()
+            
             with open(f"{self.temp_folder}/" + uri, 'wb') as sfrag:
                 sfrag.write(frag.content)
         fragkey = self.video_session.get(
         f"{self.master_playlist_url[:self.master_playlist_url.rfind('/')]}/{self.high_qual.split('/')[0]}/{key}?{self.get_policy}")
+        
+        if fragkey.status_code != 200:
+            self.cleanup()
+        
         with open(f"{self.temp_folder}/{key}", 'wb') as skey:
             skey.write(fragkey.content)
         print("")
     
     def save_video(self):
+        self.make_temp_folder()
         self.download_playlist_contents()
         self.check_save_path()
         # TODO implement hardware acceleration detection
@@ -91,13 +111,18 @@ class NativeVideoGetProtected:
             subprocess.run(ffmpegcmd, shell=True)
         elif sys.platform.startswith('win32'):
             subprocess.run(ffmpegcmd)
+        self.cleanup()
 
     def cleanup(self):
-        self.save_video()
-        for file in glob.glob(f"{self.temp_folder}/*"):
-            os.remove(file)
-        time.sleep(3)
-        os.rmdir(self.temp_folder)
+        try:
+            for file in glob.glob(f"{self.temp_folder}/*"):
+                os.remove(file)
+            time.sleep(3)
+            os.rmdir(self.temp_folder)
+        except:
+            pass
+        global download_success
+        download_success = self.finished
 
 
 class NativeVideoPublic:
@@ -105,9 +130,40 @@ class NativeVideoPublic:
         pass
 
 class EmbeddedVideo:
-    def __init__(self) -> None:
-        pass
+    def __init__(self, download_info) -> None:
+        youtube_dl.utils.std_headers['Referer'] = download_info['referer']
+        self.video_url = download_info['video_url']
+        self.save_path = download_info['save_path']
+        self.finished = False
 
+    def video_exists(self):
+        if os.path.isfile(self.save_path):
+            self.finished = True
+        else:
+            self.save_video()
+    
+    def check_save_path(self):
+        if len(self.save_path) > 254:
+            new_name = ''.join(
+                random.choices(string.ascii_uppercase + string.digits, k=7)) + ".mp4"
+            if not os.path.exists(f"{self.save_path.split('/')[0]}/ev"):
+                os.makedirs(f"{self.save_path.split('/')[0]}/ev")
+            with open(f"{self.save_path.split('/')[0]}/ev/map.txt", "a", encoding="utf-8") as sv_check:
+                sv_check.write(f"{new_name} - {self.save_path}")
+            self.save_path = f"{self.save_path.split('/')[0]}/ev/{new_name}"
+        else:
+            if not os.path.exists(self.save_path[:self.save_path.rfind('/')]):
+                os.makedirs(self.save_path[:self.save_path.rfind('/')])
+    
+    def save_video(self):
+        self.check_save_path()
+        ydl_opts = {"format": "best",
+            'retries': 8,
+            'fragment_retries': 6,
+            'quiet': True,
+            "outtmpl": self.save_path}
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([self.video_url])
 
 def clear_screen():
     os.system("clear||cls")
@@ -195,18 +251,13 @@ class Colors:
 
 
 
-class NormalizeString:
-    def __init__(self, string_to_normalize: str="") -> None:
-        self.normalize_me = string_to_normalize
-        self.normalize()
-    
-    def normalize(self):
-        return " ".join(re.sub(r'[<>:!"/\\|?*]', '', self.normalize_me)
-                        .strip()
-                        .replace('\t', '')
-                        .replace('\n', '')
-                        .replace('.', '')
-                        .split(' '))
+def normalize_str(normalize_me):
+    return " ".join(re.sub(r'[<>:!"/\\|?*]', '', normalize_me)
+                    .strip()
+                    .replace('\t', '')
+                    .replace('\n', '')
+                    .replace('.', '')
+                    .split(' '))
 
 
 class HotmartClub:
@@ -237,10 +288,22 @@ class HotmartClub:
                             'current_lesson': None,
                             'current_video': None,
                             'video_seconds': 0}
+        self.current_media_name = None
+        self.player_auth = {"CloudFront-Policy": "", 
+                            "CloudFront-Signature": "", 
+                            "CloudFront-Key-Pair-Id": ""}
         self.auth_hotmart = self.create_session()
+        self.original_names = self.use_orig_names()
         self.downloadable_courses_list = self.retrieve_downloadable_list()
         self.start_course_download()
 
+    def use_orig_names(self):
+        choice = input("Você gostaria de usar os nomes originais dos vídeos? s/n\n")
+        if choice.lower() in ['s', 'si', 'sim', 'ism', 'smi', 'y', 'ye', 'yes', 'yse', 'eys']:
+            return True
+        else:
+            return False
+    
     def get_user_email(self) -> str:
         print(f"Qual o seu email da {Colors.Yellow}Hotmart{Colors.Reset}?")
         while True:
@@ -320,7 +383,7 @@ class HotmartClub:
                     .get(f'{self.HOTMART_API}/membership?attach_token=false') \
                     .json()['name']
 
-                product['name'] = NormalizeString(course_name).normalize()
+                product['name'] = normalize_str(course_name)
 
                 downloadable_courses.append(product)
             except KeyError:
@@ -328,6 +391,7 @@ class HotmartClub:
         return downloadable_courses
 
     def start_course_download(self):
+        clear_screen()
         print(f"Cursos disponíveis para {Colors.Green}download{Colors.Reset}:")
         for index, course in enumerate(self.downloadable_courses_list, start=1):
             print(f"{index} - {course['name']}")
@@ -369,25 +433,166 @@ class HotmartClub:
         lesson_getter = self.auth_hotmart
         return lesson_getter.get(f'{self.HOTMART_API}/page/{page_hash}').json()
 
+    def filter_cookies(self, cookies):
+        for cookie in cookies:
+            if cookie['path'].endswith("hls/"):
+                self.player_auth[cookie['name']] = cookie['value']
+    
     def retrieve_native_player_lesson(self, lesson_videos: list=[]):
         for index, media in enumerate(lesson_videos, start=1):
             if media['mediaType'] != "VIDEO":
+                input("Por favor contate o dev informando que não é um type video! Enter para continuar.")
                 continue
+            
             video_getter = self.auth_hotmart
             player = video_getter.get(media['mediaSrcUrl']).text
-            info = json.loads(BeautifulSoup(player, features="html.parser") \
-            .find(text=re.compile("window.playerConfig"))[:-1].split(" ", 2)[2])
-            self.course_stats['video_seconds'] += info['player']['mediaDuration']
-            for asset in info['player']['assets']:
-                download_info = {'master_playlist': f"{asset['url']}?{info['player']['cloudFrontSignature']}",
-                'save_path': f"{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/{index}. {NormalizeString(media['mediaName']).normalize()}.mp4",
+            info = json.loads(BeautifulSoup(
+                                player, features="html.parser")
+                                .find("script", {"id":"__NEXT_DATA__"}).text)
+            self.course_stats['video_seconds'] += info['props']['pageProps']['playerData']['mediaDuration']
+            
+            self.filter_cookies(info['props']['pageProps']['playerData']['cookies'])
+
+            for asset in info['props']['pageProps']['playerData']['assets']:
+                download_info = {'master_playlist': f"{asset['url']}?Policy={self.player_auth['CloudFront-Policy']}&Signature={self.player_auth['CloudFront-Signature']}&Key-Pair-Id={self.player_auth['CloudFront-Key-Pair-Id']}",
+                'save_path': f"Cursos/{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/{index}. {normalize_str(media['mediaName'].rsplit('.', 1)[0]) if self.original_names else 'parte'}.mp4",
                 'session': self.auth_hotmart}
-                NativeVideoGetProtected(download_info).cleanup()
+                global download_success
+                while not download_success:
+                    NativeVideoGetProtected(download_info).video_exists()
+                    if not download_success:
+                        print(f"{Colors.Red}Desconectado, redefinindo sessão!")
+                        self.auth_hotmart = self.create_session()
+                download_success = False
 
-    def retrieve_embedded_links(self):
-        pass
+    def retrieve_embedded_lesson(self, player_html):
+        try:
+            external_source = None
+            page_html = BeautifulSoup(player_html['content'], features="html.parser")
+            video_iframe = page_html.findAll("iframe")
+            for index, media in enumerate(video_iframe, start=1):
+                # TODO Mesmo trecho de aula longa zzz
+
+                file_path = os.path.dirname(os.path.abspath(__file__))
+                save_path = f"{file_path}/Cursos/{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/{index}. ext.mp4"
 
 
+                media_src = media.get("src")
+                
+                if 'player.vimeo' in media_src:
+                    external_source = f"{Colors.Cyan}Vimeo{Colors.Reset}"
+                    if "?" in media_src:
+                        video_url = media_src.split("?")[0]
+                    else:
+                        video_url = media_src
+                    if video_url[-1] == "/":
+                        video_url = video_url.split("/")[-1]
+
+                elif 'vimeo.com' in media_src:
+                    external_source = f"{Colors.Cyan}Vimeo{Colors.Reset}"
+                    vimeoID = media_src.split('vimeo.com/')[1]
+                    if "?" in vimeoID:
+                        vimeoID = vimeoID.split("?")[0]
+                    video_url = "https://player.vimeo.com/video/" + vimeoID
+
+                elif "wistia" in media_src:
+                    # TODO Implementar Wistia
+                    external_source = None
+                    # fonteExterna = f"{Colors.Yellow}Wistia{Colors.Reset}"
+                    # Preciso de um curso que tenha aula do Wistia para ver como tá sendo dado
+                    # :( Ajuda noix Telegram: @katomaro
+                    print("Wistia! Entra em contato no Telegram pfv")
+
+                elif "youtube.com" in media_src or "youtu.be" in media_src:
+                    fonteExterna = f"{Colors.Red}YouTube{Colors.Reset}"
+                    video_url = media_src
+
+                course_subdomain = self.course_info['resource']['subdomain']
+
+                download_info = {'video_url': video_url,
+                'save_path': save_path,
+                'referer': f"https://{course_subdomain}.club.hotmart.com/"}
+
+                if external_source is not None:
+                    print(f"{Colors.Magenta}Baixando aula externa de fonte: {fonteExterna}!")
+                    try:
+                        EmbeddedVideo(download_info).video_exists()
+                    except:
+                        print(f"{Colors.Red}O vídeo é uma Live Agendada, ou, foi apagado!{Colors.Reset}")
+                        with open(f"Cursos/{self.course_info['name']}/erros.txt", "a", encoding="utf-8") as elog:
+                            elog.write(f"{video_url} - {self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/{index}. ext.mp4")
+
+        except:
+            print("Ou não tem aula externa ou deu algum erro aí, abre issue descrevendo que depois vejo")
+
+    def save_text(self, content, c_type):
+        f_name = 'a'
+        f_type = 'a'
+        if c_type == 'd':
+            f_type = 'ed'
+            f_name = 'desc.html'
+        elif c_type == 'l':
+            f_type = 'el'
+            f_name = 'links.html'
+        file_path = os.path.dirname(os.path.abspath(__file__))
+        lesson_path = f"{file_path}/Cursos/{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/{f_name}"
+            
+        
+        if len(lesson_path) > 254:
+            if not os.path.exists(f"Cursos/{self.course_info['name']}/{f_type}"):
+                os.makedirs(f"Cursos/{self.course_info['name']}/{f_type}")
+            temp_name = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            with open(f"Cursos/{self.course_info['name']}/{f_type}/list.txt", "a", encoding="utf-8") as safelist:
+                safelist.write(f"{temp_name} = {self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/{f_name}\n")
+            lesson_path = f"Cursos/{self.course_info['name']}/{f_type}/{temp_name}.html"
+
+        if not os.path.exists(lesson_path[:lesson_path.rfind('/')]):
+            os.makedirs(lesson_path[:lesson_path.rfind('/')])
+
+        if not os.path.isfile(lesson_path):
+            if c_type == 'd':
+                with open(lesson_path, "w", encoding="utf-8") as desct:
+                    desct.write(content)
+            elif c_type == 'l':
+                for link in content:
+                    with open(lesson_path, "a", encoding="utf-8") as linkz:
+                        linkz.write(f'''<p><a href="{link['articleUrl']}">{link['articleName']}</a></p>''')
+
+    def save_attachment(self, attachment):
+        file_path = os.path.dirname(os.path.abspath(__file__))
+        lesson_path = f"{file_path}/Cursos/{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/Materiais/{attachment['fileName']}"
+        if len(lesson_path) > 254:
+            if not os.path.exists(f"Cursos/{self.course_info['name']}/et"):
+                os.makedirs(f"Cursos/{self.course_info['name']}/et")
+            temp_name = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            with open(f"Cursos/{self.course_info['name']}/et/list.txt", "a", encoding="utf-8") as safelist:
+                safelist.write(
+                    f"{temp_name} = {self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/Materiais/{attachment['fileName']}\n")
+            lesson_path = f"Cursos/{self.course_info['name']}/et/{temp_name}.{attachment['fileName'].split('.')[-1]}"
+
+        if not os.path.exists(f"Cursos/{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/Materiais"):
+            os.makedirs(f"Cursos/{self.course_info['name']}/{self.course_stats['current_module']}/{self.course_stats['current_lesson']}/Materiais")
+
+        if not os.path.isfile(lesson_path):
+            try:
+                att_getter = self.auth_hotmart
+                anexo = att_getter.get(
+                    f"https://api-club.hotmart.com/hot-club-api/rest/v3/attachment/{attachment['fileMembershipId']}/download").json()
+                anexo = requests.get(anexo['directDownloadUrl'])
+            except KeyError:
+                vrum = requests.session()
+                vrum.headers.update(self.auth_hotmart.headers)
+                lambdaUrl = anexo['lambdaUrl']
+                vrum.headers['token'] = anexo['token']
+                anexo = requests.get(vrum.get(lambdaUrl).text)
+                del vrum
+            with open(lesson_path, 'wb') as ann:
+                ann.write(anexo.content)
+                print(f"{Colors.Magenta}Anexo baixado com sucesso!{Colors.Reset}")
+        else:
+            print("Anexo já existente!")
+    
+    
     def parse_course_info(self):
         self.count_downloadable_course += 1
         clear_screen()
@@ -398,19 +603,50 @@ class HotmartClub:
         for module in self.course_json['modules']:
             self.course_stats['count_module'] += 1
             self.course_stats['current_module'] = \
-            f"{module['moduleOrder']}. {NormalizeString(module['name']).normalize()}"
+            f"{module['moduleOrder']}. {normalize_str(module['name'])}"
             for lesson in module['pages']:
-                if self.course_stats['count_lesson'] % 5 == 0:
+                if self.course_stats['count_lesson'] % 10 == 0:
                     clear_screen()
                 self.course_stats['count_lesson'] += 1
                 self.course_stats['current_lesson'] = \
-                    f"{lesson['pageOrder']}. {NormalizeString(lesson['name']).normalize()}"
-                print(f"Curso {self.count_downloadable_course}/{self.download_course_quantity}: {self.course_info['name']};;; Verificando o {Colors.Cyan}Módulo {self.course_stats['count_module']}{Colors.Reset}/{Colors.Blue}{self.course_stats['total_modules']}{Colors.Reset}; {Colors.Cyan}Aula {self.course_stats['count_lesson']}{Colors.Reset}/{Colors.Blue}{self.course_stats['total_lessons']}{Colors.Reset}")
+                    f"{lesson['pageOrder']}. {normalize_str(lesson['name'])}"
+                print(f"Curso {self.count_downloadable_course}/{self.download_course_quantity}: {self.course_info['name']}; Verificando o {Colors.Cyan}Módulo {self.course_stats['count_module']}{Colors.Reset}/{Colors.Blue}{self.course_stats['total_modules']}{Colors.Reset}; {Colors.Cyan}Aula {self.course_stats['count_lesson']}{Colors.Reset}/{Colors.Blue}{self.course_stats['total_lessons']}{Colors.Reset}")
                 lesson_info = self.retrieve_lesson_info(lesson['hash'])
+                # video lessons
                 try:
                     self.retrieve_native_player_lesson(lesson_info['mediasSrc'])
                 except KeyError:
-                    pass
-                    # self.retrieve_embedded_links()
+                    self.retrieve_embedded_lesson(lesson_info['content'])
+                # lesson descriptions/textual lessons
+                try:
+                    if lesson_info['content'].strip() != '':
+                        self.save_text(lesson_info['content'], 'd')
+                        print(f"{Colors.Magenta}Descrição encontrada e salva!{Colors.Reset}")
+                except KeyError:
+                    print("Sem Descrição!")
+                # Complementary Readings
+                try:
+                    if lesson_info['complementaryReadings']:
+                        self.save_text(lesson_info['complementaryReadings'], 'l')
+                        print(f"{Colors.Magenta}Link Complementar encontrado e salvo!{Colors.Reset}")
+                except KeyError:
+                    print("Sem Leitura Complementar!")
+                # Attachments
+                try:
+                    for att in lesson_info['attachments']:
+                        print(f"{Colors.Magenta}Tentando baixar o anexo: {Colors.Red}{att['fileName']}{Colors.Reset}")
+                        self.save_attachment(att)
+                except KeyError:
+                    print("Sem Anexos!")
+
+    def goodbye(self):
+        with open(f'Cursos/{self.course_info["name"]}/info.txt', 'w') as info:
+            info.write(f"""Curso baixado utilizando o Katomart!\n
+            Ao iniciar o download o curso possuia {self.course_stats['total_modules']} módulos,
+            dos quais {self.course_stats['locked_modules']} estavam bloqueados.\n
+            Por outro lado, o mesmo possuia {self.course_stats['total_lessons']},
+            das quais {self.course_stats['locked_lessons']} estavam bloqueadas.
+            Foram baixados {self.course_stats['video_seconds']} segundos de vídeo nativo da plataforma.""")
+
 
 HotmartClub()
